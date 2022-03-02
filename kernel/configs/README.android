@@ -6,7 +6,7 @@ android-recommended.config enable advanced Android features.
 Assuming you already have a minimalist defconfig for your device, a possible
 way to enable these options would be:
 
-     ARCH=<arch> scripts/kconfig/merge_config.sh <path_to>/<device>_defconfig kernel/configs/android-base.config kernel/configs/android-recommended.config
+     ARCH=arm64 scripts/kconfig/merge_config.sh arch/arm64/configs/sm7150_sec_a71_eur_open_defconfig kernel/configs/android-base.config kernel/configs/android-recommended.config kernel/configs/android-recommended-arm64.config
 
 This will generate a .config that can then be used to save a new defconfig or
 compile a new kernel with Android features enabled.

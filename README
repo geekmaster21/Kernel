@@ -1,18 +1,148 @@
-Linux kernel
-============
+#!/bin/bash
+# script that creates clang/llvm cross toolchain for aarch64 android target
+# compile a hello world program that runs on AOSP Android:
+# test with: adb push hello /data/cache && adb shell /data/cache/hello
+# GCC:
+# C: aarch64-linux-android-gcc hello.c -o hello -pie
+# C++: aarch64-linux-android-g++ hello.cc -o hello -pie -fPIC -static-libgcc \
+# -nostdlib -L/usr/local/aarch64-linux-android/lib -lc++ -lc -nostdinc++ \
+# -I/usr/local/aarch64-linux-android/include/c++/v1 -std=c++11
+# Clang/LLVM:
+# C: /usr/local/aarch64-linux-android/bin/clang hello.c -o hello
+# C++: /usr/local/aarch64-linux-android/bin/clang++ hello.cc -o hello \
+# --stdlib=libc++ --rtlib=compiler-rt
+# C++ with sanitizers (ubsan as an example):
+# /usr/local/aarch64-linux-android/bin/clang++ hello.cc -o hello --stdlib=libc++ \
+# -fsanitize=undefined -static-libsan --rtlib=compiler-rt
 
-This file was moved to Documentation/admin-guide/README.rst
+set -e
 
-Please notice that there are several guides for kernel developers and users.
-These guides can be rendered in a number of formats, like HTML and PDF.
+# set the environment variables
+export TARGET=aarch64-linux-android
+export PREFIX=/usr/local/$TARGET
 
-In order to build the documentation, use ``make htmldocs`` or
-``make pdfdocs``.
+# set up repositories
+mkdir crossllvm && cd crossllvm
+for a in llvm compiler-rt libunwind libcxx libcxxabi; do
+    git clone https://github.com/llvm/llvm-project/$a.git --depth=1
+done
+pushd llvm/tools && \
+    git clone http://llvm.org/git/clang.git --depth=1 && \
+    popd
 
-There are various text files in the Documentation/ subdirectory,
-several of them using the Restructured Text markup notation.
-See Documentation/00-INDEX for a list of what is contained in each file.
+# install GNU binutils
+# copy headers into $PREFIX/$TARGET/sys-include
+# copy crt*.o lib{c,m,dl}.so to $PREFIX/lib64 and $PREFIX/$TARGET/lib
+# install GCC
 
-Please read the Documentation/process/changes.rst file, as it contains the
-requirements for building and running the kernel, and information about
-the problems which may result by upgrading your kernel.
+# llvm + clang
+cd ..
+
+# compiler-rt builtins
+cd compiler-rt && mkdir build && cd build
+cmake /workspace/Kernel/crossllvm/llvm/compiler-rt -G Ninja \
+    -DCMAKE_C_COMPILER="$PREFIX/bin/clang" \
+    -DCMAKE_C_FLAGS="-isystem $PREFIX/$TARGET/sys-include" \
+    -DCMAKE_AR=$PREFIX/bin/llvm-ar \
+    -DCMAKE_NM=$PREFIX/bin/llvm-nm \
+    -DCMAKE_RANLIB=$PREFIX/bin/llvm-ranlib \
+    -DCMAKE_INSTALL_PREFIX=$PREFIX/lib/clang/7.0.0 \
+    -DLLVM_CONFIG_PATH=$PREFIX/bin/llvm-config \
+    -DCOMPILER_RT_BUILD_BUILTINS=ON \
+    -DCOMPILER_RT_BUILD_SANITIZERS=OFF \
+    -DCOMPILER_RT_BUILD_XRAY=OFF \
+    -DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
+    -DCOMPILER_RT_BUILD_PROFILE=OFF
+ninja && sudo ninja install
+cd ../..
+
+# libunwind
+cd libunwind && mkdir build && cd build
+cmake .. -G Ninja \
+    -DCMAKE_C_COMPILER="$PREFIX/bin/clang" \
+    -DCMAKE_CXX_COMPILER="$PREFIX/bin/clang++" \
+    -DCMAKE_CXX_FLAGS="-isystem $PREFIX/$TARGET/sys-include" \
+    -DCMAKE_AR="$PREFIX/bin/llvm-ar" \
+    -DCMAKE_NM="$PREFIX/bin/llvm-nm" \
+    -DCMAKE_RANLIB="$PREFIX/bin/llvm-ranlib" \
+    -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+    -DLLVM_CONFIG_PATH="$PREFIX/bin/llvm-config"
+ninja && sudo ninja install
+cd ../..
+
+# libcxxabi
+cd libcxxabi && mkdir build && cd build
+cmake .. -G Ninja \
+    -DCMAKE_C_COMPILER="$PREFIX/bin/clang" \
+    -DCMAKE_CXX_COMPILER="$PREFIX/bin/clang++" \
+    -DCMAKE_CXX_FLAGS="-isystem $PREFIX/$TARGET/sys-include" \
+    -DCMAKE_AR="$PREFIX/bin/llvm-ar" \
+    -DCMAKE_NM="$PREFIX/bin/llvm-nm" \
+    -DCMAKE_RANLIB="$PREFIX/bin/llvm-ranlib" \
+    -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+    -DLLVM_CONFIG_PATH="$PREFIX/bin/llvm-config" \
+    -DLIBCXXABI_LIBCXX_INCLUDES="../../libcxx/include" \
+    -DLIBCXXABI_USE_COMPILER_RT=ON \
+    -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+    -DLIBCXXABI_ENABLE_STATIC=ON \
+    -DLIBCXXABI_ENABLE_SHARED=ON
+ninja && sudo ninja install
+sudo cp -R ../include $PREFIX/include/libcxxabi
+cd ../..
+
+# libcxx
+# warning: rebase to drop commit 85a7702b4cc5d69402791fe685f151cf3076be71
+# libcxx head NDK version too new; we have r14
+# https://reviews.llvm.org/D46558
+cd libcxx && mkdir build && cd build
+TODELETE=85a7702b4cc5d69402791fe685f151cf3076be71
+pushd .. && \
+    git fetch --unshallow && \
+    git rebase $TODELETE --onto $TODELETE^ && \
+    popd
+cmake .. -G Ninja \
+    -DCMAKE_C_COMPILER="$PREFIX/bin/clang" \
+    -DCMAKE_CXX_COMPILER="$PREFIX/bin/clang++" \
+    -DCMAKE_CXX_FLAGS="-isystem $PREFIX/$TARGET/sys-include" \
+    -DCMAKE_AR="$PREFIX/bin/llvm-ar" \
+    -DCMAKE_NM="$PREFIX/bin/llvm-nm" \
+    -DCMAKE_RANLIB="$PREFIX/bin/llvm-ranlib" \
+    -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+    -DLLVM_CONFIG_PATH="$PREFIX/bin/llvm-config" \
+    -DLIBCXX_CXX_ABI="libcxxabi" \
+    -DLIBCXX_CXX_ABI_INCLUDE_PATHS="$PREFIX/include/libcxxabi" \
+    -DLIBCXX_USE_COMPILER_RT=ON
+ninja && sudo ninja install
+cd ../..
+
+# statically link libunwind and libc++abi into libc++ to match Android behavior
+pushd $PREFIX/lib
+sudo mv libc++.so libc++.so.old
+sudo /usr/local/aarch64-linux-android/bin/clang -shared \
+    -o libc++.so -Wl,--whole-archive libc++.a libc++abi.a libunwind.a \
+    -Wl,--no-whole-archive
+popd
+
+# compiler-rt non-builtin
+# warning: bionic headers lack some definitions to compile
+# apply https://gist.github.com/KireinaHoro/141d27321b2aab27fa8292b1bd0f7105
+# to bionic headers before continuing
+cd compiler-rt
+# clean up build directory remains when building builtins
+rm -rf build && mkdir build && cd build
+cmake .. -G Ninja \
+    -DCMAKE_C_COMPILER="$PREFIX/bin/clang" \
+    -DCMAKE_C_FLAGS="-isystem $PREFIX/$TARGET/sys-include" \
+    -DCMAKE_CXX_COMPILER="$PREFIX/bin/clang++" \
+    -DCMAKE_CXX_FLAGS="-isystem $PREFIX/$TARGET/sys-include" \
+    -DCMAKE_AR=$PREFIX/bin/llvm-ar \
+    -DCMAKE_NM=$PREFIX/bin/llvm-nm \
+    -DCMAKE_RANLIB=$PREFIX/bin/llvm-ranlib \
+    -DCMAKE_INSTALL_PREFIX=$PREFIX/lib/clang/7.0.0 \
+    -DLLVM_CONFIG_PATH=$PREFIX/bin/llvm-config \
+    -DCOMPILER_RT_BUILD_BUILTINS=OFF \
+    -DCOMPILER_RT_BUILD_SANITIZERS=ON \
+    -DCOMPILER_RT_BUILD_XRAY=ON \
+    -DCOMPILER_RT_BUILD_LIBFUZZER=ON \
+    -DCOMPILER_RT_BUILD_PROFILE=ON
+ninja && sudo ninja install
